@@ -5,7 +5,10 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.86"
+itertools = "0.13.0"
+linfa = "0.7.0"
 linfa-clustering = "0.7.0"
-polars = { version = "0.41.2", features = ["lazy"] }
+linfa-nn = "0.7.0"
+polars = { version = "0.41.2", features = ["lazy", "ndarray"] }
 reqwest = { version = "0.12.5", features = ["blocking"] }
 tempfile = "3.10.1"
