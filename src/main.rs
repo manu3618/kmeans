@@ -191,22 +191,20 @@ impl DataFramePreproc {
     }
 }
 
-fn swap_series(s: Series, swap: HashMap<AnyValue, AnyValue>) -> Series {
+fn swap_series(s: Series, swap: HashMap<i64, i64>) -> Series {
     s.iter()
-        .map(|v| swap.get(&v).unwrap().try_extract::<i32>().unwrap())
+        .map(|v| swap.get(&v.try_extract::<i64>().unwrap()).unwrap())
         .collect()
 }
 
-fn get_classes_swaps(classes: Vec<i32>) -> Vec<HashMap<i32, i32>> {
+fn get_classes_swaps(classes: Vec<i64>) -> Vec<HashMap<i64, i64>> {
     classes
         .iter()
         .permutations(classes.len()) // permutations
         .collect::<Vec<_>>()
         .iter()
         .map(|permuted| {
-            HashMap::<i32, i32>::from_iter(
-                zip(&classes, permuted.clone()).map(|(a, b)| (a.clone(), b.clone())),
-            )
+            HashMap::<i64, i64>::from_iter(zip(&classes, permuted.clone()).map(|(&a, &b)| (a, b)))
         })
         .collect()
 }
@@ -214,10 +212,11 @@ fn get_classes_swaps(classes: Vec<i32>) -> Vec<HashMap<i32, i32>> {
 /// Classification results
 /// 2 columns data frame.
 ///
-/// | truth | prediction |
+/// | truth | predicted  |
 /// |-------|------------|
 /// | ...   | ...        |
 ///
+#[derive(Debug)]
 struct ClassificationResult(DataFrame);
 
 impl ClassificationResult {
@@ -232,9 +231,10 @@ impl ClassificationResult {
     }
 
     fn tp(&self) -> usize {
-        let truth = self.0.column("truth");
-        let prediction = self.0.column("prediction");
-        zip(truth, prediction)
+        let truth = self.0.column("truth").unwrap();
+        let prediction = self.0.column("predicted").unwrap();
+        dbg!(&truth);
+        zip(truth.iter(), prediction.iter())
             .filter(|(ref t, ref p)| t == p)
             .count()
     }
@@ -245,10 +245,24 @@ impl ClassificationResult {
     /// this function tries to match result classes to oringinal classes
     /// by swapping result classes
     fn reorder_classes(&self) -> Self {
-        let classes = self.classes();
-        let predicted = self.0.column("predicted");
+        let classes = self
+            .classes()
+            .iter()
+            .map(|c| c.try_extract::<i64>().unwrap())
+            .collect();
+        let predicted = self.0.column("prediction").unwrap();
 
-        todo!()
+        get_classes_swaps(classes)
+            .into_iter()
+            .map(|swap| {
+                Self(
+                    df!("truth" => self.0.column("truth").unwrap().clone(),
+                    "predicted" => swap_series(predicted.clone(), swap))
+                    .unwrap(),
+                )
+            })
+            .max_by_key(|result| result.tp())
+            .unwrap()
     }
 
     /// Compute confusion matrix
@@ -259,12 +273,16 @@ impl ClassificationResult {
     /// |         | class B  |         |         |         | ... |         |       |
     /// | truth   | class C  |         |         |         | ... |         |       |
     /// |         | ...      | ...     | ...     | ...     | ... | ...     |       |
+    /// |         | class N  |         |         |         | ... |         |       |
     /// |         | total    |         |         |         |     |         |       |
     fn confusion_matrix(&self) -> DataFrame {
         let classes = self.classes();
+
+        let res = self.reorder_classes();
+
         let mut counts = HashMap::new(); // {(truth, predicted): count}
-        for idx in 0..self.0.shape().0 {
-            let row = self.0.get_row(idx).expect("idx is a valid index");
+        for idx in 0..res.0.shape().0 {
+            let row = res.0.get_row(idx).expect("idx is a valid index");
             *counts
                 .entry((row.0[0].clone(), row.0[1].clone()))
                 .or_insert(0) += 1;
@@ -292,24 +310,40 @@ impl ClassificationResult {
             .iter()
             .map(|c| format!("truth\n{c}"))
             .collect::<Vec<_>>();
+        idx_label.push("total".into());
+
+        // row total
         let mut total =
-            df!("total" => result.iter().map(|s| {s.iter().map(|c|c.try_extract::<i32>().unwrap()).sum::<i32>()})
+            df!("total" => result.iter().map(|s| {s.iter().map(|c|c.try_extract::<i64>().unwrap()).sum::<i64>()})
                 .collect::<Vec<_>>()
             )
             .unwrap()
             .transpose(None, None)
             .unwrap();
-        dbg!(&result);
-        dbg!(&total);
         let b = total.clone();
         let names =
             zip(b.iter().map(|c| c.name()), result.iter().map(|c| c.name())).collect::<Vec<_>>();
         for (old, new) in names {
-            let total = total.rename(old, new).unwrap();
-            dbg!(&total);
+            total = total.rename(old, new).unwrap().clone();
         }
+        let mut result = result
+            .lazy()
+            .cast_all(DataType::Int64, true)
+            .collect()
+            .unwrap()
+            .vstack(&total)
+            .unwrap();
 
-        let mut result = result.vstack(&total).unwrap();
+        // column total
+        let mut row = result.get_row(0).unwrap();
+        let mut total: Vec<i64> = Vec::with_capacity(result.shape().0);
+        for idx in 0..result.shape().0{
+            let _ = result.get_row_amortized(idx, &mut row);
+            total.push(row.0.iter().map(|c| c.try_extract::<i64>().unwrap()).sum())
+        }
+        result.insert_column(result.shape().1, Series::new("total", total)).unwrap();
+
+        // labels
         result
             .insert_column(0, idx_label.into_iter().collect::<Series>())
             .unwrap();
@@ -395,10 +429,10 @@ fn main() -> Result<()> {
         df.drop("class")?
             .to_ndarray::<Float64Type>(IndexOrder::default())?,
     ));
-    dbg!(pred.targets());
-    dbg!(pred.targets().iter().map(|&s| s as f64).collect::<Series>());
-    dbg!(pred.targets().iter().collect::<Vec<_>>());
-    dbg!(&df.column("class")?.clone().rename("truth"));
+    // dbg!(pred.targets());
+    // dbg!(pred.targets().iter().map(|&s| s as f64).collect::<Series>());
+    // dbg!(pred.targets().iter().collect::<Vec<_>>());
+    // dbg!(&df.column("class")?.clone().rename("truth"));
     let results = DataFrame::new(vec![
         df.column("class")?.clone().rename("truth").clone(),
         pred.targets()
