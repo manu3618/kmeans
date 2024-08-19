@@ -191,12 +191,14 @@ impl DataFramePreproc {
     }
 }
 
+/// map data in the serie following swap.
 fn swap_series(s: Series, swap: HashMap<i64, i64>) -> Series {
     s.iter()
         .map(|v| swap.get(&v.try_extract::<i64>().unwrap()).unwrap())
         .collect()
 }
 
+/// get all possible class swaps.
 fn get_classes_swaps(classes: Vec<i64>) -> Vec<HashMap<i64, i64>> {
     classes
         .iter()
@@ -212,7 +214,7 @@ fn get_classes_swaps(classes: Vec<i64>) -> Vec<HashMap<i64, i64>> {
 /// Classification results
 /// 2 columns data frame.
 ///
-/// | truth | predicted  |
+/// | truth | prediction |
 /// |-------|------------|
 /// | ...   | ...        |
 ///
@@ -232,8 +234,7 @@ impl ClassificationResult {
 
     fn tp(&self) -> usize {
         let truth = self.0.column("truth").unwrap();
-        let prediction = self.0.column("predicted").unwrap();
-        dbg!(&truth);
+        let prediction = self.0.column("prediction").unwrap();
         zip(truth.iter(), prediction.iter())
             .filter(|(ref t, ref p)| t == p)
             .count()
@@ -257,7 +258,7 @@ impl ClassificationResult {
             .map(|swap| {
                 Self(
                     df!("truth" => self.0.column("truth").unwrap().clone(),
-                    "predicted" => swap_series(predicted.clone(), swap))
+                    "prediction" => swap_series(predicted.clone(), swap))
                     .unwrap(),
                 )
             })
@@ -267,7 +268,7 @@ impl ClassificationResult {
 
     /// Compute confusion matrix
     ///
-    /// |                    |                        predicted                    |
+    /// |                    |                        prediction                   |
     /// |                    | class A | class B | class C | ... | class N | total |
     /// |         | class A  |         |         |         | ... |         |       |
     /// |         | class B  |         |         |         | ... |         |       |
@@ -280,20 +281,20 @@ impl ClassificationResult {
 
         let res = self.reorder_classes();
 
-        let mut counts = HashMap::new(); // {(truth, predicted): count}
+        let mut counts = HashMap::new(); // {(truth, prediction): count}
         for idx in 0..res.0.shape().0 {
             let row = res.0.get_row(idx).expect("idx is a valid index");
             *counts
                 .entry((row.0[0].clone(), row.0[1].clone()))
                 .or_insert(0) += 1;
         }
-        let mut result = DataFrame::new(
+        let result = DataFrame::new(
             classes
                 .clone()
                 .into_iter()
                 .map(|c| {
                     Series::new(
-                        &format!("predicted\n{c}"),
+                        &format!("prediction\n{c}"),
                         classes
                             .clone()
                             .into_iter()
@@ -337,11 +338,13 @@ impl ClassificationResult {
         // column total
         let mut row = result.get_row(0).unwrap();
         let mut total: Vec<i64> = Vec::with_capacity(result.shape().0);
-        for idx in 0..result.shape().0{
+        for idx in 0..result.shape().0 {
             let _ = result.get_row_amortized(idx, &mut row);
             total.push(row.0.iter().map(|c| c.try_extract::<i64>().unwrap()).sum())
         }
-        result.insert_column(result.shape().1, Series::new("total", total)).unwrap();
+        result
+            .insert_column(result.shape().1, Series::new("total", total))
+            .unwrap();
 
         // labels
         result
@@ -377,15 +380,12 @@ fn main() -> Result<()> {
 
     let temp_file = NamedTempFile::new()?;
     write!(&temp_file, "{}", &body)?;
-    dbg!(&data_file);
-    dbg!(&temp_file);
-    dbg!(temp_file.into_temp_path());
 
     // read CSV file
+    // let lf = CsvReader::new(data_file);
     let lf = CsvReadOptions::default()
         .with_has_header(false)
         .into_reader_with_file_handle(data_file);
-    // let lf = CsvReader::new(data_file);
     let mut df: DataFrame = lf.finish()?;
     let columns = vec![
         "class",
@@ -404,12 +404,12 @@ fn main() -> Result<()> {
         "Proline",
     ];
     df.set_column_names(&columns)?;
-    dbg!(&df);
 
     // rebuild description
     let descr = DataFramePreproc(df.clone()).describe()?;
     dbg!(descr);
 
+    // check normalization works
     let kinds = [
         Normalization::Standard,
         Normalization::MinMax,
@@ -422,17 +422,13 @@ fn main() -> Result<()> {
         dbg!(DataFramePreproc(normalized).describe()?);
     }
 
+    // K-means
     let model = k_means(&df, 4)?;
-    dbg!(&model);
-
     let pred = model.predict(DatasetBase::from(
         df.drop("class")?
             .to_ndarray::<Float64Type>(IndexOrder::default())?,
     ));
-    // dbg!(pred.targets());
-    // dbg!(pred.targets().iter().map(|&s| s as f64).collect::<Series>());
-    // dbg!(pred.targets().iter().collect::<Vec<_>>());
-    // dbg!(&df.column("class")?.clone().rename("truth"));
+
     let results = DataFrame::new(vec![
         df.column("class")?.clone().rename("truth").clone(),
         pred.targets()
