@@ -222,7 +222,7 @@ fn get_classes_swaps(classes: Vec<i64>) -> Vec<HashMap<i64, i64>> {
 struct ClassificationResult(DataFrame);
 
 impl ClassificationResult {
-    fn classes(&self) -> Vec<AnyValue> {
+    fn classes(&self) -> Vec<AnyValue<'_>> {
         self.0
             .iter()
             .map(|s| s.iter().collect::<HashSet<_>>())
