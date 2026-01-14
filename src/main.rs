@@ -30,16 +30,16 @@ struct SeriePreproc(Series);
 impl SeriePreproc {
     fn normalize(&self, kind: Normalization) -> Result<Series> {
         match kind {
-            Normalization::Standard => Ok(self.standard()?.with_name(self.0.name())),
-            Normalization::MinMax => Ok(self.minmax()?.with_name(self.0.name())),
-            Normalization::Quartiles => Ok(self.quartiles()?.with_name(self.0.name())),
-            Normalization::Center => Ok(self.center()?.with_name(self.0.name())),
+            Normalization::Standard => Ok(self.standard()?.with_name(self.0.name().clone())),
+            Normalization::MinMax => Ok(self.minmax()?.with_name(self.0.name().clone())),
+            Normalization::Quartiles => Ok(self.quartiles()?.with_name(self.0.name().clone())),
+            Normalization::Center => Ok(self.center()?.with_name(self.0.name().clone())),
         }
     }
 
     fn standard(&self) -> Result<Series> {
         let s = &self.0.cast(&DataType::Float64)?;
-        let mean = s.mean_reduce().as_any_value().extract::<f64>().unwrap();
+        let mean = s.mean_reduce()?.as_any_value().extract::<f64>().unwrap();
         let std = s.std(1).expect("Serie should not be empty");
         Ok(s.iter()
             .map(|elt| (elt.extract::<f64>().unwrap() - mean) / std)
@@ -57,12 +57,12 @@ impl SeriePreproc {
     fn quartiles(&self) -> Result<Series> {
         let s = &self.0.cast(&DataType::Float64)?;
         let q1 = s
-            .quantile_reduce(0.25, QuantileInterpolOptions::Linear)?
+            .quantile_reduce(0.25, QuantileMethod::Linear)?
             .as_any_value()
             .extract::<f64>()
             .unwrap();
         let q3 = s
-            .quantile_reduce(0.75, QuantileInterpolOptions::Linear)?
+            .quantile_reduce(0.75, QuantileMethod::Linear)?
             .as_any_value()
             .extract::<f64>()
             .unwrap();
@@ -74,7 +74,7 @@ impl SeriePreproc {
     }
     fn center(&self) -> Result<Series> {
         let s = &self.0.cast(&DataType::Float64)?;
-        let mean = s.mean_reduce().as_any_value().extract::<f64>().unwrap();
+        let mean = s.mean_reduce()?.as_any_value().extract::<f64>().unwrap();
         Ok(s.iter()
             .map(|elt| elt.extract::<f64>().unwrap() - mean)
             .collect())
@@ -91,7 +91,7 @@ impl DataFramePreproc {
                 .map(|s| {
                     s.min_reduce()
                         .expect("data frame should not be empty")
-                        .into_series(s.name())
+                        .into_column(s.name().clone())
                         .cast(&DataType::Float64) // Cast to avoid mixing i64 and f64
                         .expect("cast from int to float should go smoothly")
                 })
@@ -100,9 +100,9 @@ impl DataFramePreproc {
         let df_q1 = DataFrame::new(
             df.iter()
                 .map(|s| {
-                    s.quantile_reduce(0.25, QuantileInterpolOptions::Linear)
+                    s.quantile_reduce(0.25, QuantileMethod::Linear)
                         .expect("data frame should not be empty")
-                        .into_series(s.name())
+                        .into_column(s.name().clone())
                 })
                 .collect::<Vec<_>>(),
         )?;
@@ -111,7 +111,7 @@ impl DataFramePreproc {
                 .map(|s| {
                     s.median_reduce()
                         .expect("data frame should not be empty")
-                        .into_series(s.name())
+                        .into_column(s.name().clone())
                         .cast(&DataType::Float64)
                         .expect("cast from int to float should go smoothly")
                 })
@@ -120,9 +120,9 @@ impl DataFramePreproc {
         let df_q3 = DataFrame::new(
             df.iter()
                 .map(|s| {
-                    s.quantile_reduce(0.75, QuantileInterpolOptions::Linear)
+                    s.quantile_reduce(0.75, QuantileMethod::Linear)
                         .expect("data frame should not be empty")
-                        .into_series(s.name())
+                        .into_column(s.name().clone())
                 })
                 .collect::<Vec<_>>(),
         )?;
@@ -131,7 +131,7 @@ impl DataFramePreproc {
                 .map(|s| {
                     s.max_reduce()
                         .expect("data frame should not be empty")
-                        .into_series(s.name())
+                        .into_column(s.name().clone())
                         .cast(&DataType::Float64)
                         .expect("cast from int to float should go smoothly")
                 })
@@ -145,7 +145,7 @@ impl DataFramePreproc {
                 .map(|s| {
                     s.std_reduce(1)
                         .expect("data frame should not be empty")
-                        .into_series(s.name())
+                        .into_column(s.name().clone())
                         .cast(&DataType::Float64)
                         .expect("cast from int to float should go smoothly")
                 })
@@ -156,7 +156,8 @@ impl DataFramePreproc {
             df.iter()
                 .map(|s| {
                     s.mean_reduce()
-                        .into_series(s.name())
+                        .unwrap()
+                        .into_column(s.name().clone())
                         .cast(&DataType::Float64)
                         .expect("cast from int to float should go smoothly")
                 })
@@ -177,14 +178,22 @@ impl DataFramePreproc {
         )?
         .collect()?;
         let labels = df!(""=>["min", "q1", "med", "q3", "max", "avg", "std dev"])?;
-        Ok(polars::functions::concat_df_horizontal(&[labels, result])?)
+        Ok(polars::functions::concat_df_horizontal(
+            &[labels, result],
+            false,
+        )?)
     }
 
     fn normalize(&self, kind: Normalization) -> Result<DataFrame> {
         let df = DataFrame::new(
             self.0
                 .iter()
-                .map(|s| SeriePreproc(s.clone()).normalize(kind).unwrap())
+                .map(|s| {
+                    SeriePreproc(s.clone())
+                        .normalize(kind)
+                        .unwrap()
+                        .into_column()
+                })
                 .collect::<Vec<_>>(),
         )?;
         Ok(df)
@@ -235,7 +244,7 @@ impl ClassificationResult {
     fn tp(&self) -> usize {
         let truth = self.0.column("truth").unwrap();
         let prediction = self.0.column("prediction").unwrap();
-        zip(truth.iter(), prediction.iter())
+        zip(truth.as_series().iter(), prediction.as_series().iter())
             .filter(|(ref t, ref p)| t == p)
             .count()
     }
@@ -257,8 +266,8 @@ impl ClassificationResult {
             .into_iter()
             .map(|swap| {
                 Self(
-                    df!("truth" => self.0.column("truth").unwrap().clone(),
-                    "prediction" => swap_series(predicted.clone(), swap))
+                    df!("truth" => self.0.column("truth").unwrap().as_series().unwrap().clone(),
+                    "prediction" => swap_series(predicted.as_series().unwrap().clone(), swap))
                     .unwrap(),
                 )
             })
@@ -294,7 +303,7 @@ impl ClassificationResult {
                 .into_iter()
                 .map(|c| {
                     Series::new(
-                        &format!("prediction\n{c}"),
+                        format!("prediction\n{c}").into(),
                         classes
                             .clone()
                             .into_iter()
@@ -302,6 +311,7 @@ impl ClassificationResult {
                             .copied()
                             .collect::<Vec<_>>(),
                     )
+                    .into_column()
                 })
                 .collect(),
         )
@@ -325,7 +335,7 @@ impl ClassificationResult {
         let names =
             zip(b.iter().map(|c| c.name()), result.iter().map(|c| c.name())).collect::<Vec<_>>();
         for (old, new) in names {
-            total = total.rename(old, new).unwrap().clone();
+            total = total.rename(old, new.clone()).unwrap().clone();
         }
         let mut result = result
             .lazy()
@@ -343,7 +353,10 @@ impl ClassificationResult {
             total.push(row.0.iter().map(|c| c.try_extract::<i64>().unwrap()).sum())
         }
         result
-            .insert_column(result.shape().1, Series::new("total", total))
+            .insert_column(
+                result.shape().1,
+                Series::new(String::from("total").into(), total),
+            )
             .unwrap();
 
         // labels
@@ -387,7 +400,7 @@ fn main() -> Result<()> {
         .with_has_header(false)
         .into_reader_with_file_handle(data_file);
     let mut df: DataFrame = lf.finish()?;
-    let columns = vec![
+    let columns: Vec<String> = [
         "class",
         "Alcohol",
         "Malic acid",
@@ -402,7 +415,10 @@ fn main() -> Result<()> {
         "Hue",
         "OD280/OD315 of diluted wines",
         "Proline",
-    ];
+    ]
+    .iter()
+    .map(|&s| s.into())
+    .collect();
     df.set_column_names(&columns)?;
 
     // rebuild description
@@ -429,14 +445,17 @@ fn main() -> Result<()> {
             .to_ndarray::<Float64Type>(IndexOrder::default())?,
     ));
 
+    let mut truth = df.column("class")?.clone();
+    truth.rename("truth".into());
     let results = DataFrame::new(vec![
-        df.column("class")?.clone().rename("truth").clone(),
+        truth.clone(),
         pred.targets()
             .iter()
             .map(|&s| s as i64)
             .collect::<Series>()
-            .rename("prediction")
-            .clone(),
+            .rename("prediction".into())
+            .clone()
+            .into(),
     ])?;
     dbg!(&results);
     dbg!(ClassificationResult(results).confusion_matrix());
