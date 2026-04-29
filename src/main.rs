@@ -1,10 +1,11 @@
 use anyhow::Result;
 use itertools::Itertools;
-use linfa::prelude::Predict; // to use Kmeas.predict()
+use linfa::prelude::Predict; // to use Kmeans.predict()
 use linfa::traits::Fit;
 use linfa::DatasetBase;
 use linfa_clustering::KMeans;
 use linfa_nn::distance::L2Dist;
+use ndarray::Array2;
 use polars::prelude::*;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -87,7 +88,9 @@ impl DataFramePreproc {
     fn describe(&self) -> Result<DataFrame> {
         let df = &self.0;
         let df_min = DataFrame::new(
-            df.iter()
+            1, // height
+            df.columns()
+                .iter()
                 .map(|s| {
                     s.min_reduce()
                         .expect("data frame should not be empty")
@@ -98,7 +101,9 @@ impl DataFramePreproc {
                 .collect::<Vec<_>>(),
         )?;
         let df_q1 = DataFrame::new(
-            df.iter()
+            1,
+            df.columns()
+                .iter()
                 .map(|s| {
                     s.quantile_reduce(0.25, QuantileMethod::Linear)
                         .expect("data frame should not be empty")
@@ -107,7 +112,9 @@ impl DataFramePreproc {
                 .collect::<Vec<_>>(),
         )?;
         let df_median = DataFrame::new(
-            df.iter()
+            1,
+            df.columns()
+                .iter()
                 .map(|s| {
                     s.median_reduce()
                         .expect("data frame should not be empty")
@@ -118,7 +125,9 @@ impl DataFramePreproc {
                 .collect::<Vec<_>>(),
         )?;
         let df_q3 = DataFrame::new(
-            df.iter()
+            1,
+            df.columns()
+                .iter()
                 .map(|s| {
                     s.quantile_reduce(0.75, QuantileMethod::Linear)
                         .expect("data frame should not be empty")
@@ -127,7 +136,9 @@ impl DataFramePreproc {
                 .collect::<Vec<_>>(),
         )?;
         let df_max = DataFrame::new(
-            df.iter()
+            1,
+            df.columns()
+                .iter()
                 .map(|s| {
                     s.max_reduce()
                         .expect("data frame should not be empty")
@@ -141,7 +152,9 @@ impl DataFramePreproc {
         let df_std = DataFrame::new(
             // ddof argument of std documented at
             // https://github.com/pola-rs/polars/blob/daf2e4983b6d94b06f2eaa3a77c2e02c112f5675/py-polars/polars/expr/list.py#L300
-            df.iter()
+            1,
+            df.columns()
+                .iter()
                 .map(|s| {
                     s.std_reduce(1)
                         .expect("data frame should not be empty")
@@ -153,7 +166,9 @@ impl DataFramePreproc {
         )?;
 
         let df_mean = DataFrame::new(
-            df.iter()
+            1,
+            df.columns()
+                .iter()
                 .map(|s| {
                     s.mean_reduce()
                         .unwrap()
@@ -181,15 +196,19 @@ impl DataFramePreproc {
         Ok(polars::functions::concat_df_horizontal(
             &[labels, result],
             false,
+            false,
+            false,
         )?)
     }
 
     fn normalize(&self, kind: Normalization) -> Result<DataFrame> {
         let df = DataFrame::new(
+            self.0.shape().0,
             self.0
+                .columns()
                 .iter()
                 .map(|s| {
-                    SeriePreproc(s.clone())
+                    SeriePreproc(s.as_materialized_series().clone())
                         .normalize(kind)
                         .unwrap()
                         .into_column()
@@ -233,8 +252,9 @@ struct ClassificationResult(DataFrame);
 impl ClassificationResult {
     fn classes(&self) -> Vec<AnyValue<'_>> {
         self.0
+            .columns()
             .iter()
-            .map(|s| s.iter().collect::<HashSet<_>>())
+            .map(|s| s.as_materialized_series().iter().collect::<HashSet<_>>())
             .reduce(|acc, e| acc.union(&e).cloned().collect::<HashSet<_>>())
             .unwrap()
             .into_iter()
@@ -298,6 +318,7 @@ impl ClassificationResult {
                 .or_insert(0) += 1;
         }
         let result = DataFrame::new(
+            classes.len(),
             classes
                 .clone()
                 .into_iter()
@@ -325,15 +346,18 @@ impl ClassificationResult {
 
         // row total
         let mut total =
-            df!("total" => result.iter().map(|s| {s.iter().map(|c|c.try_extract::<i64>().unwrap()).sum::<i64>()})
+            df!("total" => result.columns().iter().map(|s| {s.as_materialized_series().iter().map(|c|c.try_extract::<i64>().unwrap()).sum::<i64>()})
                 .collect::<Vec<_>>()
             )
             .unwrap()
             .transpose(None, None)
             .unwrap();
         let b = total.clone();
-        let names =
-            zip(b.iter().map(|c| c.name()), result.iter().map(|c| c.name())).collect::<Vec<_>>();
+        let names = zip(
+            b.columns().iter().map(|c| c.name()),
+            result.columns().iter().map(|c| c.name()),
+        )
+        .collect::<Vec<_>>();
         for (old, new) in names {
             total = total.rename(old, new.clone()).unwrap().clone();
         }
@@ -355,13 +379,13 @@ impl ClassificationResult {
         result
             .insert_column(
                 result.shape().1,
-                Series::new(String::from("total").into(), total),
+                Series::new(String::from("total").into(), total).into(),
             )
             .unwrap();
 
         // labels
         result
-            .insert_column(0, idx_label.into_iter().collect::<Series>())
+            .insert_column(0, idx_label.into_iter().collect::<Series>().into())
             .unwrap();
         result
     }
@@ -374,10 +398,14 @@ fn k_means(data: &DataFrame, n_cluster: usize) -> Result<KMeans<f64, L2Dist>> {
         .get(cols.iter().position(|s| s == &"class").unwrap())
         .expect("classes should be provided");
     let data = data.drop("class")?;
+    // let data: Array2<f64> = data.to_ndarray(IndexOrder::default())?;
     let data = DatasetBase::new(
         data.to_ndarray::<Float64Type>(IndexOrder::default())?,
+        // data.to_ndarray(IndexOrder::default())?,
+        // data,
         classes,
     );
+
     let model = KMeans::params(n_cluster).fit(&data).expect("data fitted");
     Ok(model)
 }
