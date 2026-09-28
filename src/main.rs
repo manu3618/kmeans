@@ -5,6 +5,7 @@ use linfa::traits::Fit;
 use linfa::DatasetBase;
 use linfa_clustering::KMeans;
 use linfa_nn::distance::L2Dist;
+use ndarray::Array2;
 use polars::prelude::*;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -30,16 +31,16 @@ struct SeriePreproc(Series);
 impl SeriePreproc {
     fn normalize(&self, kind: Normalization) -> Result<Series> {
         match kind {
-            Normalization::Standard => Ok(self.standard()?.with_name(self.0.name())),
-            Normalization::MinMax => Ok(self.minmax()?.with_name(self.0.name())),
-            Normalization::Quartiles => Ok(self.quartiles()?.with_name(self.0.name())),
-            Normalization::Center => Ok(self.center()?.with_name(self.0.name())),
+            Normalization::Standard => Ok(self.standard()?.with_name(self.0.name().clone())),
+            Normalization::MinMax => Ok(self.minmax()?.with_name(self.0.name().clone())),
+            Normalization::Quartiles => Ok(self.quartiles()?.with_name(self.0.name().clone())),
+            Normalization::Center => Ok(self.center()?.with_name(self.0.name().clone())),
         }
     }
 
     fn standard(&self) -> Result<Series> {
         let s = &self.0.cast(&DataType::Float64)?;
-        let mean = s.mean_reduce().as_any_value().extract::<f64>().unwrap();
+        let mean = s.mean_reduce()?.as_any_value().extract::<f64>().unwrap();
         let std = s.std(1).expect("Serie should not be empty");
         Ok(s.iter()
             .map(|elt| (elt.extract::<f64>().unwrap() - mean) / std)
@@ -57,12 +58,12 @@ impl SeriePreproc {
     fn quartiles(&self) -> Result<Series> {
         let s = &self.0.cast(&DataType::Float64)?;
         let q1 = s
-            .quantile_reduce(0.25, QuantileInterpolOptions::Linear)?
+            .quantile_reduce(0.25, QuantileMethod::Linear)?
             .as_any_value()
             .extract::<f64>()
             .unwrap();
         let q3 = s
-            .quantile_reduce(0.75, QuantileInterpolOptions::Linear)?
+            .quantile_reduce(0.75, QuantileMethod::Linear)?
             .as_any_value()
             .extract::<f64>()
             .unwrap();
@@ -74,7 +75,7 @@ impl SeriePreproc {
     }
     fn center(&self) -> Result<Series> {
         let s = &self.0.cast(&DataType::Float64)?;
-        let mean = s.mean_reduce().as_any_value().extract::<f64>().unwrap();
+        let mean = s.mean_reduce()?.as_any_value().extract::<f64>().unwrap();
         Ok(s.iter()
             .map(|elt| elt.extract::<f64>().unwrap() - mean)
             .collect())
@@ -86,79 +87,94 @@ struct DataFramePreproc(DataFrame);
 impl DataFramePreproc {
     fn describe(&self) -> Result<DataFrame> {
         let df = &self.0;
-        let df_min = DataFrame::new(
-            df.iter()
+        let df_min = DataFrame::new_infer_height(
+            df.columns()
+                .iter()
                 .map(|s| {
                     s.min_reduce()
                         .expect("data frame should not be empty")
-                        .into_series(s.name())
+                        .into_series(s.name().clone())
                         .cast(&DataType::Float64) // Cast to avoid mixing i64 and f64
                         .expect("cast from int to float should go smoothly")
+                        .into()
                 })
                 .collect::<Vec<_>>(),
         )?;
-        let df_q1 = DataFrame::new(
-            df.iter()
+        let df_q1 = DataFrame::new_infer_height(
+            df.columns()
+                .iter()
                 .map(|s| {
-                    s.quantile_reduce(0.25, QuantileInterpolOptions::Linear)
+                    s.quantile_reduce(0.25, QuantileMethod::Linear)
                         .expect("data frame should not be empty")
-                        .into_series(s.name())
+                        .into_series(s.name().clone())
+                        .into()
                 })
                 .collect::<Vec<_>>(),
         )?;
-        let df_median = DataFrame::new(
-            df.iter()
+        let df_median = DataFrame::new_infer_height(
+            df.columns()
+                .iter()
                 .map(|s| {
                     s.median_reduce()
                         .expect("data frame should not be empty")
-                        .into_series(s.name())
+                        .into_series(s.name().clone())
                         .cast(&DataType::Float64)
                         .expect("cast from int to float should go smoothly")
+                        .into()
                 })
                 .collect::<Vec<_>>(),
         )?;
-        let df_q3 = DataFrame::new(
-            df.iter()
+        let df_q3 = DataFrame::new_infer_height(
+            df.columns()
+                .iter()
                 .map(|s| {
-                    s.quantile_reduce(0.75, QuantileInterpolOptions::Linear)
+                    s.quantile_reduce(0.75, QuantileMethod::Linear)
                         .expect("data frame should not be empty")
-                        .into_series(s.name())
+                        .into_series(s.name().clone())
+                        .into()
                 })
                 .collect::<Vec<_>>(),
         )?;
-        let df_max = DataFrame::new(
-            df.iter()
+        let df_max = DataFrame::new_infer_height(
+            df.columns()
+                .iter()
                 .map(|s| {
                     s.max_reduce()
                         .expect("data frame should not be empty")
-                        .into_series(s.name())
+                        .into_series(s.name().clone())
                         .cast(&DataType::Float64)
                         .expect("cast from int to float should go smoothly")
+                        .into()
                 })
                 .collect::<Vec<_>>(),
         )?;
 
-        let df_std = DataFrame::new(
+        let df_std = DataFrame::new_infer_height(
             // ddof argument of std documented at
             // https://github.com/pola-rs/polars/blob/daf2e4983b6d94b06f2eaa3a77c2e02c112f5675/py-polars/polars/expr/list.py#L300
-            df.iter()
+            df.columns()
+                .iter()
                 .map(|s| {
                     s.std_reduce(1)
                         .expect("data frame should not be empty")
-                        .into_series(s.name())
+                        .into_series(s.name().clone())
                         .cast(&DataType::Float64)
                         .expect("cast from int to float should go smoothly")
+                        .into()
                 })
                 .collect::<Vec<_>>(),
         )?;
 
-        let df_mean = DataFrame::new(
-            df.iter()
+        let df_mean = DataFrame::new_infer_height(
+            df.columns()
+                .iter()
                 .map(|s| {
                     s.mean_reduce()
-                        .into_series(s.name())
+                        .expect("reduce should go smoothly")
+                        .into_series(s.name().clone())
                         .cast(&DataType::Float64)
                         .expect("cast from int to float should go smoothly")
+                        .into()
                 })
                 .collect::<Vec<_>>(),
         )?;
@@ -177,14 +193,25 @@ impl DataFramePreproc {
         )?
         .collect()?;
         let labels = df!(""=>["min", "q1", "med", "q3", "max", "avg", "std dev"])?;
-        Ok(polars::functions::concat_df_horizontal(&[labels, result])?)
+        Ok(polars::functions::concat_df_horizontal(
+            &[labels, result],
+            false,
+            false,
+            false,
+        )?)
     }
 
     fn normalize(&self, kind: Normalization) -> Result<DataFrame> {
-        let df = DataFrame::new(
+        let df = DataFrame::new_infer_height(
             self.0
+                .columns()
                 .iter()
-                .map(|s| SeriePreproc(s.clone()).normalize(kind).unwrap())
+                .map(|s| {
+                    SeriePreproc(s.as_series().unwrap().clone())
+                        .normalize(kind)
+                        .unwrap()
+                        .into()
+                })
                 .collect::<Vec<_>>(),
         )?;
         Ok(df)
@@ -222,10 +249,11 @@ fn get_classes_swaps(classes: Vec<i64>) -> Vec<HashMap<i64, i64>> {
 struct ClassificationResult(DataFrame);
 
 impl ClassificationResult {
-    fn classes(&self) -> Vec<AnyValue> {
+    fn classes(&self) -> Vec<AnyValue<'_>> {
         self.0
+            .columns()
             .iter()
-            .map(|s| s.iter().collect::<HashSet<_>>())
+            .map(|s| s.as_series().unwrap().iter().collect::<HashSet<_>>())
             .reduce(|acc, e| acc.union(&e).cloned().collect::<HashSet<_>>())
             .unwrap()
             .into_iter()
@@ -235,9 +263,12 @@ impl ClassificationResult {
     fn tp(&self) -> usize {
         let truth = self.0.column("truth").unwrap();
         let prediction = self.0.column("prediction").unwrap();
-        zip(truth.iter(), prediction.iter())
-            .filter(|(ref t, ref p)| t == p)
-            .count()
+        zip(
+            truth.as_series().unwrap().iter(),
+            prediction.as_series().unwrap().iter(),
+        )
+        .filter(|(ref t, ref p)| t == p)
+        .count()
     }
 
     /// Reassign classes to match truth
@@ -257,8 +288,19 @@ impl ClassificationResult {
             .into_iter()
             .map(|swap| {
                 Self(
-                    df!("truth" => self.0.column("truth").unwrap().clone(),
-                    "prediction" => swap_series(predicted.clone(), swap))
+                    df!(
+                        // XXX
+                    "truth" => self
+                        .0
+                        .column("truth")
+                        .unwrap()
+                        .as_series().unwrap().iter()
+                        .collect::<Vec<_>>(),
+                    "prediction" => swap_series(
+                            predicted.as_series().unwrap().clone(),
+                            swap
+                        )
+                    )
                     .unwrap(),
                 )
             })
@@ -288,13 +330,13 @@ impl ClassificationResult {
                 .entry((row.0[0].clone(), row.0[1].clone()))
                 .or_insert(0) += 1;
         }
-        let result = DataFrame::new(
+        let result = DataFrame::new_infer_height(
             classes
                 .clone()
                 .into_iter()
                 .map(|c| {
                     Series::new(
-                        &format!("prediction\n{c}"),
+                        format!("prediction\n{c}").into(),
                         classes
                             .clone()
                             .into_iter()
@@ -302,6 +344,7 @@ impl ClassificationResult {
                             .copied()
                             .collect::<Vec<_>>(),
                     )
+                    .into()
                 })
                 .collect(),
         )
@@ -315,17 +358,20 @@ impl ClassificationResult {
 
         // row total
         let mut total =
-            df!("total" => result.iter().map(|s| {s.iter().map(|c|c.try_extract::<i64>().unwrap()).sum::<i64>()})
+            df!("total" => result.columns().iter().map(|s| {s.as_series().unwrap().iter().map(|c|c.try_extract::<i64>().unwrap()).sum::<i64>()})
                 .collect::<Vec<_>>()
             )
             .unwrap()
             .transpose(None, None)
             .unwrap();
         let b = total.clone();
-        let names =
-            zip(b.iter().map(|c| c.name()), result.iter().map(|c| c.name())).collect::<Vec<_>>();
+        let names = zip(
+            b.columns().iter().map(|c| c.name()),
+            result.columns().iter().map(|c| c.name()),
+        )
+        .collect::<Vec<_>>();
         for (old, new) in names {
-            total = total.rename(old, new).unwrap().clone();
+            total = total.rename(old, new.clone()).unwrap().clone();
         }
         let mut result = result
             .lazy()
@@ -343,12 +389,12 @@ impl ClassificationResult {
             total.push(row.0.iter().map(|c| c.try_extract::<i64>().unwrap()).sum())
         }
         result
-            .insert_column(result.shape().1, Series::new("total", total))
+            .insert_column(result.shape().1, Series::new("total".into(), total).into())
             .unwrap();
 
         // labels
         result
-            .insert_column(0, idx_label.into_iter().collect::<Series>())
+            .insert_column(0, idx_label.into_iter().collect::<Series>().into())
             .unwrap();
         result
     }
@@ -361,10 +407,12 @@ fn k_means(data: &DataFrame, n_cluster: usize) -> Result<KMeans<f64, L2Dist>> {
         .get(cols.iter().position(|s| s == &"class").unwrap())
         .expect("classes should be provided");
     let data = data.drop("class")?;
-    let data = DatasetBase::new(
-        data.to_ndarray::<Float64Type>(IndexOrder::default())?,
-        classes,
-    );
+    let polars_array = data.to_ndarray::<Float64Type>(IndexOrder::C)?;
+    let records = Array2::from_shape_vec(
+        (polars_array.nrows(), polars_array.ncols()),
+        polars_array.iter().copied().collect(),
+    )?;
+    let data = DatasetBase::new(records, classes);
     let model = KMeans::params(n_cluster).fit(&data).expect("data fitted");
     Ok(model)
 }
@@ -424,19 +472,26 @@ fn main() -> Result<()> {
 
     // K-means
     let model = k_means(&df, 4)?;
-    let pred = model.predict(DatasetBase::from(
-        df.drop("class")?
-            .to_ndarray::<Float64Type>(IndexOrder::default())?,
-    ));
 
-    let results = DataFrame::new(vec![
-        df.column("class")?.clone().rename("truth").clone(),
+    let polars_array = df.drop("class")?.to_ndarray::<Float64Type>(IndexOrder::C)?;
+    let records = Array2::from_shape_vec(
+        (polars_array.nrows(), polars_array.ncols()),
+        polars_array.iter().copied().collect(),
+    )?;
+
+    let pred = model.predict(DatasetBase::from(records));
+
+    let mut truth = df.column("class")?.clone();
+    truth.rename("truth".into());
+    let results = DataFrame::new_infer_height(vec![
+        truth,
         pred.targets()
             .iter()
             .map(|&s| s as i64)
             .collect::<Series>()
-            .rename("prediction")
-            .clone(),
+            .rename("prediction".into())
+            .clone()
+            .into(),
     ])?;
     dbg!(&results);
     dbg!(ClassificationResult(results).confusion_matrix());
