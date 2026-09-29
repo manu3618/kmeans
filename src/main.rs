@@ -9,10 +9,8 @@ use ndarray::Array2;
 use polars::prelude::*;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::io::Write;
+use std::io::Cursor;
 use std::iter::zip;
-use tempfile::tempfile;
-use tempfile::NamedTempFile;
 
 #[derive(Debug, Copy, Clone)]
 enum Normalization {
@@ -323,6 +321,8 @@ impl ClassificationResult {
 
         let res = self.reorder_classes();
 
+        #[allow(clippy::mutable_key_type)] // interior value of AnyValue<'_> and Arc<_>  (HashMap
+        // keys) are immutable here
         let mut counts = HashMap::new(); // {(truth, prediction): count}
         for idx in 0..res.0.shape().0 {
             let row = res.0.get_row(idx).expect("idx is a valid index");
@@ -421,19 +421,13 @@ fn main() -> Result<()> {
     // get dataset
     let data_url = "https://archive.ics.uci.edu/ml/machine-learning-databases/wine/wine.data";
     let body = reqwest::blocking::get(data_url)?.text()?;
-
-    // write dataset to file
-    let mut data_file = tempfile()?;
-    write!(data_file, "{}", &body)?;
-
-    let temp_file = NamedTempFile::new()?;
-    write!(&temp_file, "{}", &body)?;
+    let reader = Cursor::new(&body);
 
     // read CSV file
     // let lf = CsvReader::new(data_file);
     let lf = CsvReadOptions::default()
         .with_has_header(false)
-        .into_reader_with_file_handle(data_file);
+        .into_reader_with_file_handle(reader);
     let mut df: DataFrame = lf.finish()?;
     let columns = vec![
         "class",
@@ -452,6 +446,7 @@ fn main() -> Result<()> {
         "Proline",
     ];
     df.set_column_names(&columns)?;
+    dbg!(&df);
 
     // rebuild description
     let descr = DataFramePreproc(df.clone()).describe()?;
